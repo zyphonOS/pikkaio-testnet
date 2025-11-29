@@ -4,12 +4,14 @@ import { ethers } from 'ethers'
 import WalletConnect from '@/components/WalletConnect'
 
 const INTENT_REGISTRY_ABI = [
-  "function createIntent(string) payable",
+  "function createIntent(string description) payable",
+  "function getIntentCount() view returns (uint256)",
   "function intentCount() view returns (uint256)", 
-  "function fulfillIntent(uint256, string)",
-  "function validateProof(uint256, bool)",
-  "function intents(uint256) view returns (address, string, uint256, uint256, bool, uint256, string, address, uint256)",
-  "function getValidators(uint256) view returns (address[])",
+  "function fulfillIntent(uint256 intentId, string proof)",
+  "function validateProof(uint256 intentId, bool isValid)",
+  "function getIntent(uint256 intentId) view returns (address, string, uint256, uint256, bool, uint256, string, address, uint256)",
+  "function intents(uint256 intentId) view returns (address, string, uint256, uint256, bool, uint256, string, address, uint256)",
+  "function getValidators(uint256 intentId) view returns (address[])",
   "event IntentCreated(uint256 indexed intentId, address creator, string description, uint256 stake)",
   "event IntentFulfilled(uint256 indexed intentId, address fulfiller, string proof)",
   "event ProofValidated(uint256 indexed intentId, address validator, bool isValid)"
@@ -64,16 +66,54 @@ export default function Home() {
       const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, provider)
 
       console.log('📊 Fetching intent count...')
-      const count = await contract.intentCount()
+      
+      // Try different function names for intent count
+      let count = 0;
+      try {
+        count = await contract.getIntentCount();
+        console.log('✅ Used getIntentCount()');
+      } catch (e) {
+        console.log('❌ getIntentCount failed, trying intentCount...');
+        try {
+          count = await contract.intentCount();
+          console.log('✅ Used intentCount()');
+        } catch (e2) {
+          console.log('❌ Both count functions failed, checking contract directly...');
+          // Last resort - try to read storage directly
+          try {
+            const result = await provider.call({
+              to: CONTRACT_ADDRESS,
+              data: '0x0c53c51c' // intentCount function signature
+            });
+            if (result && result !== '0x') {
+              count = BigInt(result);
+              console.log('✅ Used direct call to intentCount');
+            }
+          } catch (e3) {
+            console.log('❌ All count methods failed, setting to 0');
+            count = 0;
+          }
+        }
+      }
+      
       const countNumber = Number(count)
-      console.log('📈 Total intents:', countNumber)
+      console.log('📈 Total intents found:', countNumber)
       setConnectionStatus(`📈 Found ${countNumber} intents on chain`)
       
       const intentList = []
       for (let i = 1; i <= countNumber; i++) {
         try {
           console.log(`🔄 Loading intent ${i}...`)
-          const intentData = await contract.intents(i)
+          
+          let intentData;
+          try {
+            intentData = await contract.getIntent(i);
+            console.log(`✅ Used getIntent(${i})`);
+          } catch (e) {
+            console.log(`❌ getIntent(${i}) failed, trying intents(${i})...`);
+            intentData = await contract.intents(i);
+            console.log(`✅ Used intents(${i})`);
+          }
           
           if (intentData[0] !== ethers.ZeroAddress) {
             let validators: string[] = []
@@ -96,7 +136,7 @@ export default function Home() {
               validationScore: intentData[8],
               validators: validators
             })
-            console.log(`✅ Loaded intent ${i}: ${intentData[1].substring(0, 50)}...`)
+            console.log(`✅ Loaded intent ${i}: ${intentData[1]?.substring(0, 50) || 'No description'}...`)
           }
         } catch (e) {
           console.error(`❌ Error loading intent ${i}:`, e)
@@ -117,7 +157,7 @@ export default function Home() {
         
         let validations = 0
         intentList.forEach((intent: any) => {
-          if (intent.validators.includes(account.toLowerCase())) {
+          if (intent.validators?.includes(account.toLowerCase())) {
             validations++
           }
         })
@@ -144,12 +184,26 @@ export default function Home() {
       const blockNumber = await provider.getBlockNumber()
       console.log('📦 Current block:', blockNumber)
       
-      // Test contract call
+      // Test contract call with multiple function attempts
       const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, provider)
-      const count = await contract.intentCount()
-      console.log('📊 Contract intent count:', Number(count))
       
-      setConnectionStatus(`✅ Connection OK - Block: ${blockNumber}, Intents: ${Number(count)}`)
+      let count = 0;
+      let methodUsed = 'none';
+      try {
+        count = await contract.getIntentCount();
+        methodUsed = 'getIntentCount';
+      } catch (e) {
+        try {
+          count = await contract.intentCount();
+          methodUsed = 'intentCount';
+        } catch (e2) {
+          methodUsed = 'failed';
+        }
+      }
+      
+      console.log('📊 Contract test:', { methodUsed, count: Number(count) })
+      
+      setConnectionStatus(`✅ Connection OK - Block: ${blockNumber}, Intents: ${Number(count)} (${methodUsed})`)
     } catch (error) {
       console.error('💥 Connection test failed:', error)
       setConnectionStatus('❌ Connection test failed - check console')
@@ -290,10 +344,16 @@ export default function Home() {
                 🧪 Test Connection
               </button>
               <button 
-                onClick={() => console.log('Current intents:', intents)}
+                onClick={loadIntents}
                 className="bg-[#48cae4] text-white px-3 py-1 rounded text-sm"
               >
-                🐛 Debug Intents
+                🔄 Load Intents
+              </button>
+              <button 
+                onClick={() => console.log('Current intents:', intents)}
+                className="bg-[#ffd166] text-[#0a0e2a] px-3 py-1 rounded text-sm"
+              >
+                🐛 Debug
               </button>
             </div>
           </div>
