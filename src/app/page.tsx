@@ -51,6 +51,52 @@ export default function Home() {
     localStorage.setItem('pikkaio-intentDescription', intentDescription)
   }, [activeTab, intentDescription])
 
+  const verifyContract = async () => {
+    try {
+      console.log('🔍 Verifying contract connection...')
+      setConnectionStatus('🔍 Verifying contract...')
+      
+      const provider = new ethers.JsonRpcProvider(RPC_URL)
+      
+      // Test basic contract properties
+      const code = await provider.getCode(CONTRACT_ADDRESS)
+      console.log('📄 Contract code length:', code.length)
+      
+      if (code === '0x') {
+        setConnectionStatus('❌ Contract not deployed at this address')
+        return
+      }
+      
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, provider)
+      
+      // Try all possible count functions
+      const functions = ['getIntentCount', 'intentCount', 'totalIntents']
+      let success = false
+      
+      for (const func of functions) {
+        try {
+          if (contract[func]) {
+            const count = await contract[func]()
+            console.log(`✅ ${func}():`, Number(count))
+            setConnectionStatus(`✅ Contract verified! ${func}(): ${Number(count)} intents`)
+            success = true
+            break
+          }
+        } catch (e) {
+          console.log(`❌ ${func}():`, e.message)
+        }
+      }
+      
+      if (!success) {
+        setConnectionStatus('❌ No intent count function found')
+      }
+      
+    } catch (error) {
+      console.error('💥 Contract verification failed:', error)
+      setConnectionStatus('❌ Contract verification failed')
+    }
+  }
+
   const loadIntents = async () => {
     try {
       setConnectionStatus('🔗 Connecting to Arc Network...')
@@ -69,36 +115,27 @@ export default function Home() {
       
       // Try different function names for intent count
       let count = 0;
+      let methodUsed = 'none';
+      
       try {
         count = await contract.getIntentCount();
+        methodUsed = 'getIntentCount';
         console.log('✅ Used getIntentCount()');
       } catch (e) {
         console.log('❌ getIntentCount failed, trying intentCount...');
         try {
           count = await contract.intentCount();
+          methodUsed = 'intentCount';
           console.log('✅ Used intentCount()');
         } catch (e2) {
           console.log('❌ Both count functions failed, checking contract directly...');
-          // Last resort - try to read storage directly
-          try {
-            const result = await provider.call({
-              to: CONTRACT_ADDRESS,
-              data: '0x0c53c51c' // intentCount function signature
-            });
-            if (result && result !== '0x') {
-              count = BigInt(result);
-              console.log('✅ Used direct call to intentCount');
-            }
-          } catch (e3) {
-            console.log('❌ All count methods failed, setting to 0');
-            count = 0;
-          }
+          methodUsed = 'failed';
         }
       }
       
       const countNumber = Number(count)
       console.log('📈 Total intents found:', countNumber)
-      setConnectionStatus(`📈 Found ${countNumber} intents on chain`)
+      setConnectionStatus(`📈 Found ${countNumber} intents using ${methodUsed}`)
       
       const intentList = []
       for (let i = 1; i <= countNumber; i++) {
@@ -106,16 +143,25 @@ export default function Home() {
           console.log(`🔄 Loading intent ${i}...`)
           
           let intentData;
+          let intentMethod = 'none';
+          
           try {
             intentData = await contract.getIntent(i);
+            intentMethod = 'getIntent';
             console.log(`✅ Used getIntent(${i})`);
           } catch (e) {
             console.log(`❌ getIntent(${i}) failed, trying intents(${i})...`);
-            intentData = await contract.intents(i);
-            console.log(`✅ Used intents(${i})`);
+            try {
+              intentData = await contract.intents(i);
+              intentMethod = 'intents';
+              console.log(`✅ Used intents(${i})`);
+            } catch (e2) {
+              console.log(`❌ Both methods failed for intent ${i}`);
+              continue;
+            }
           }
           
-          if (intentData[0] !== ethers.ZeroAddress) {
+          if (intentData && intentData[0] !== ethers.ZeroAddress) {
             let validators: string[] = []
             try {
               validators = await contract.getValidators(i)
@@ -126,27 +172,29 @@ export default function Home() {
             intentList.push({
               id: i,
               creator: intentData[0],
-              description: intentData[1],
-              stakeAmount: intentData[2],
-              reward: intentData[3],
-              fulfilled: intentData[4],
-              deadline: intentData[5],
-              proof: intentData[6],
-              fulfiller: intentData[7],
-              validationScore: intentData[8],
-              validators: validators
+              description: intentData[1] || 'No description',
+              stakeAmount: intentData[2] || 0,
+              reward: intentData[3] || 0,
+              fulfilled: intentData[4] || false,
+              deadline: intentData[5] || 0,
+              proof: intentData[6] || '',
+              fulfiller: intentData[7] || ethers.ZeroAddress,
+              validationScore: Number(intentData[8]) || 0,
+              validators: validators,
+              loadMethod: intentMethod
             })
-            console.log(`✅ Loaded intent ${i}: ${intentData[1]?.substring(0, 50) || 'No description'}...`)
+            console.log(`✅ Loaded intent ${i} using ${intentMethod}: ${intentData[1]?.substring(0, 50) || 'No description'}...`)
           }
         } catch (e) {
           console.error(`❌ Error loading intent ${i}:`, e)
-          break
+          // Continue to next intent instead of breaking
+          continue
         }
       }
       
       console.log('🎯 Final intent list:', intentList)
       setIntents(intentList.reverse())
-      setConnectionStatus(`✅ Loaded ${intentList.length} intents`)
+      setConnectionStatus(`✅ Loaded ${intentList.length} intents from ${countNumber} total`)
       
       // Calculate user stats
       if (account) {
@@ -344,8 +392,14 @@ export default function Home() {
                 🧪 Test Connection
               </button>
               <button 
-                onClick={loadIntents}
+                onClick={verifyContract}
                 className="bg-[#48cae4] text-white px-3 py-1 rounded text-sm"
+              >
+                🔍 Verify Contract
+              </button>
+              <button 
+                onClick={loadIntents}
+                className="bg-[#00ff88] text-[#0a0e2a] px-3 py-1 rounded text-sm"
               >
                 🔄 Load Intents
               </button>
@@ -626,12 +680,20 @@ I intend to create content that educates thousands..."
                   <div className="text-6xl mb-4">🌌</div>
                   <div className="text-xl font-semibold">No Intents Found</div>
                   <div className="text-[#e2f3f8] mt-2">Be the first to express economic value</div>
-                  <button 
-                    onClick={testConnection}
-                    className="mt-4 bg-[#00b4d8] text-white px-4 py-2 rounded-lg"
-                  >
-                    🧪 Test Blockchain Connection
-                  </button>
+                  <div className="flex gap-2 justify-center mt-4">
+                    <button 
+                      onClick={testConnection}
+                      className="bg-[#00b4d8] text-white px-4 py-2 rounded-lg"
+                    >
+                      🧪 Test Connection
+                    </button>
+                    <button 
+                      onClick={verifyContract}
+                      className="bg-[#48cae4] text-white px-4 py-2 rounded-lg"
+                    >
+                      🔍 Verify Contract
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

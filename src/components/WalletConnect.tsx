@@ -16,71 +16,59 @@ export default function WalletConnect({ onAccountChange, autoConnect = false }: 
   const [account, setAccount] = useState('')
   const [loading, setLoading] = useState(false)
   const [walletError, setWalletError] = useState('')
-  const [availableWallets, setAvailableWallets] = useState<string[]>([])
 
-  const detectWallets = () => {
-    const wallets = []
+  // Wait for wallet conflicts to resolve
+  const getEthereum = (): any => {
+    if (typeof window === 'undefined') return undefined
     
-    if (window.ethereum) {
-      // Check for multiple providers
-      if (window.ethereum.providers && window.ethereum.providers.length > 0) {
-        window.ethereum.providers.forEach((provider: any) => {
-          if (provider.isRabby) wallets.push('Rabby')
-          else if (provider.isMetaMask) wallets.push('MetaMask')
-          else if (provider.isCoinbaseWallet) wallets.push('Coinbase')
-          else wallets.push('Ethereum')
-        })
-      } else {
-        // Single provider
-        if (window.ethereum.isRabby) wallets.push('Rabby')
-        else if (window.ethereum.isMetaMask) wallets.push('MetaMask') 
-        else if (window.ethereum.isCoinbaseWallet) wallets.push('Coinbase')
-        else wallets.push('Ethereum')
+    // Wait a bit for wallet injections to settle
+    const ethereum = window.ethereum
+    
+    if (!ethereum) return undefined
+    
+    // If multiple providers, try to find the dominant one
+    if (ethereum.providers && ethereum.providers.length > 0) {
+      // Prefer wallets in this order
+      const preferredWallets = [
+        (p: any) => p.isRabby,
+        (p: any) => p.isMetaMask, 
+        (p: any) => p.isCoinbaseWallet
+      ]
+      
+      for (const check of preferredWallets) {
+        const wallet = ethereum.providers.find(check)
+        if (wallet) return wallet
       }
+      
+      // Return first provider as fallback
+      return ethereum.providers[0]
     }
     
-    setAvailableWallets(wallets)
-    return wallets
+    return ethereum
   }
 
-  const connectWallet = async (walletType?: string) => {
+  const connectWallet = async () => {
     setWalletError('')
+    setLoading(true)
     
-    if (!window.ethereum) {
-      setWalletError('No Ethereum wallet found. Please install Rabby, MetaMask, or another Web3 wallet.')
-      return
-    }
-
-    let ethereum = window.ethereum
-
-    // Handle wallet selection if multiple available
-    if (walletType && ethereum.providers && ethereum.providers.length > 0) {
-      if (walletType === 'Rabby') {
-        ethereum = ethereum.providers.find((p: any) => p.isRabby)
-      } else if (walletType === 'MetaMask') {
-        ethereum = ethereum.providers.find((p: any) => p.isMetaMask)
-      } else if (walletType === 'Coinbase') {
-        ethereum = ethereum.providers.find((p: any) => p.isCoinbaseWallet)
-      }
+    try {
+      const ethereum = getEthereum()
       
       if (!ethereum) {
-        ethereum = window.ethereum.providers[0] // Fallback to first provider
+        setWalletError('No Ethereum wallet found. Please install Rabby, MetaMask, or another Web3 wallet.')
+        return
       }
-      
-      // Set the selected provider as active
-      window.ethereum.setSelectedProvider?.(ethereum)
-    }
 
-    setLoading(true)
-    try {
       const accounts = await ethereum.request({
         method: 'eth_requestAccounts'
       })
+      
       const account = accounts[0]
       setAccount(account)
       onAccountChange(account)
+      
     } catch (error: any) {
-      console.error('Error connecting wallet:', error)
+      console.error('Wallet connection error:', error)
       if (error.code === 4001) {
         setWalletError('Connection rejected by user')
       } else {
@@ -98,22 +86,17 @@ export default function WalletConnect({ onAccountChange, autoConnect = false }: 
   }
 
   useEffect(() => {
-    detectWallets()
-    if (autoConnect && window.ethereum) {
-      checkConnectedWallet()
+    if (autoConnect) {
+      // Delay auto-connect to let wallets settle
+      setTimeout(() => {
+        checkConnectedWallet()
+      }, 1000)
     }
   }, [autoConnect])
 
   const checkConnectedWallet = async () => {
-    if (!window.ethereum) return
-
-    let ethereum = window.ethereum
-    if (ethereum.providers && ethereum.providers.length > 0) {
-      // Prefer Rabby if available
-      ethereum = ethereum.providers.find((p: any) => p.isRabby) || 
-                 ethereum.providers.find((p: any) => p.isMetaMask) || 
-                 ethereum.providers[0]
-    }
+    const ethereum = getEthereum()
+    if (!ethereum) return
 
     try {
       const accounts = await ethereum.request({
@@ -129,15 +112,9 @@ export default function WalletConnect({ onAccountChange, autoConnect = false }: 
   }
 
   useEffect(() => {
-    let ethereum = window.ethereum
+    const ethereum = getEthereum()
     if (ethereum) {
-      if (ethereum.providers && ethereum.providers.length > 0) {
-        ethereum = ethereum.providers.find((p: any) => p.isRabby) || 
-                   ethereum.providers.find((p: any) => p.isMetaMask) || 
-                   ethereum.providers[0]
-      }
-      
-      ethereum.on('accountsChanged', (accounts: string[]) => {
+      const handleAccountsChanged = (accounts: string[]) => {
         if (accounts.length === 0) {
           setAccount('')
           onAccountChange('')
@@ -145,11 +122,19 @@ export default function WalletConnect({ onAccountChange, autoConnect = false }: 
           setAccount(accounts[0])
           onAccountChange(accounts[0])
         }
-      })
+      }
 
-      ethereum.on('chainChanged', () => {
+      const handleChainChanged = () => {
         window.location.reload()
-      })
+      }
+
+      ethereum.on('accountsChanged', handleAccountsChanged)
+      ethereum.on('chainChanged', handleChainChanged)
+
+      return () => {
+        ethereum.removeListener('accountsChanged', handleAccountsChanged)
+        ethereum.removeListener('chainChanged', handleChainChanged)
+      }
     }
   }, [onAccountChange])
 
@@ -169,39 +154,16 @@ export default function WalletConnect({ onAccountChange, autoConnect = false }: 
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {availableWallets.length > 1 ? (
-            <div className="flex flex-col gap-2">
-              <div className="text-xs text-[#48cae4]">Choose wallet:</div>
-              <div className="flex gap-2">
-                {availableWallets.map((wallet) => (
-                  <button
-                    key={wallet}
-                    onClick={() => connectWallet(wallet)}
-                    disabled={loading}
-                    className="bg-gradient-to-r from-[#00b4d8] to-[#8c3a9d] text-white px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-                  >
-                    {loading ? 'Connecting...' : `Connect ${wallet}`}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <button
-              onClick={() => connectWallet()}
-              disabled={loading}
-              className="bg-gradient-to-r from-[#00b4d8] to-[#8c3a9d] text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
-            >
-              {loading ? 'Connecting...' : 'Connect Wallet'}
-            </button>
-          )}
+          <button
+            onClick={connectWallet}
+            disabled={loading}
+            className="bg-gradient-to-r from-[#00b4d8] to-[#8c3a9d] text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50"
+          >
+            {loading ? 'Connecting...' : 'Connect Wallet'}
+          </button>
           {walletError && (
             <div className="text-xs text-red-400 bg-red-500/10 px-2 py-1 rounded border border-red-500/20">
               {walletError}
-            </div>
-          )}
-          {availableWallets.length > 0 && (
-            <div className="text-xs text-[#48cae4]/70">
-              Detected: {availableWallets.join(', ')}
             </div>
           )}
         </div>
