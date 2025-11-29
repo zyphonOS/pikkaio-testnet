@@ -32,6 +32,7 @@ export default function Home() {
     validations: 0,
     validationRewards: 0
   })
+  const [connectionStatus, setConnectionStatus] = useState('🔌 Disconnected')
 
   // Simple localStorage for session data
   useEffect(() => {
@@ -50,21 +51,37 @@ export default function Home() {
 
   const loadIntents = async () => {
     try {
-      const provider = new ethers.JsonRpcProvider(RPC_URL)
+      setConnectionStatus('🔗 Connecting to Arc Network...')
+      console.log('🔗 Connecting to Arc Network...')
+      
+      const provider = new ethers.JsonRpcProvider(RPC_URL);
+      
+      // Test connection
+      const network = await provider.getNetwork();
+      console.log('🌐 Connected to network:', network.name, network.chainId)
+      setConnectionStatus(`🌐 Connected to ${network.name} (${network.chainId})`)
+
       const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, provider)
 
+      console.log('📊 Fetching intent count...')
       const count = await contract.intentCount()
       const countNumber = Number(count)
+      console.log('📈 Total intents:', countNumber)
+      setConnectionStatus(`📈 Found ${countNumber} intents on chain`)
       
       const intentList = []
       for (let i = 1; i <= countNumber; i++) {
         try {
+          console.log(`🔄 Loading intent ${i}...`)
           const intentData = await contract.intents(i)
+          
           if (intentData[0] !== ethers.ZeroAddress) {
             let validators: string[] = []
             try {
               validators = await contract.getValidators(i)
-            } catch (e) {}
+            } catch (e) {
+              console.log(`No validators for intent ${i}`)
+            }
 
             intentList.push({
               id: i,
@@ -79,12 +96,19 @@ export default function Home() {
               validationScore: intentData[8],
               validators: validators
             })
+            console.log(`✅ Loaded intent ${i}: ${intentData[1].substring(0, 50)}...`)
           }
-        } catch (e) { break }
+        } catch (e) {
+          console.error(`❌ Error loading intent ${i}:`, e)
+          break
+        }
       }
       
+      console.log('🎯 Final intent list:', intentList)
       setIntents(intentList.reverse())
+      setConnectionStatus(`✅ Loaded ${intentList.length} intents`)
       
+      // Calculate user stats
       if (account) {
         const userIntents = intentList.filter((intent: any) => 
           intent.creator.toLowerCase() === account.toLowerCase()
@@ -104,8 +128,31 @@ export default function Home() {
         setUserStats({ points, fulfilled, validations, validationRewards })
       }
     } catch (error) {
-      console.error('Error loading intents:', error)
+      console.error('💥 Error loading intents:', error)
+      setConnectionStatus('❌ Failed to load intents - check console')
       setIntents([])
+    }
+  }
+
+  const testConnection = async () => {
+    try {
+      console.log('🧪 Testing RPC connection...')
+      setConnectionStatus('🧪 Testing RPC connection...')
+      
+      // Test basic RPC call
+      const provider = new ethers.JsonRpcProvider(RPC_URL)
+      const blockNumber = await provider.getBlockNumber()
+      console.log('📦 Current block:', blockNumber)
+      
+      // Test contract call
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, provider)
+      const count = await contract.intentCount()
+      console.log('📊 Contract intent count:', Number(count))
+      
+      setConnectionStatus(`✅ Connection OK - Block: ${blockNumber}, Intents: ${Number(count)}`)
+    } catch (error) {
+      console.error('💥 Connection test failed:', error)
+      setConnectionStatus('❌ Connection test failed - check console')
     }
   }
 
@@ -127,18 +174,21 @@ export default function Home() {
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, signer)
 
+      console.log('💸 Creating intent with stake:', stakeAmount)
       const tx = await contract.createIntent(intentDescription, {
         value: ethers.parseEther(stakeAmount)
       })
       
+      console.log('⏳ Waiting for transaction...')
       await tx.wait()
+      
       alert('🎯 Intent expressed and staked! Your economic asset is now live.')
       setIntentDescription('')
       setTimeout(loadIntents, 2000)
       setActiveTab('market')
     } catch (error) {
       console.error('Error:', error)
-      alert('Failed to create intent')
+      alert('Failed to create intent - check console for details')
     } finally {
       setLoading(false)
     }
@@ -156,6 +206,7 @@ export default function Home() {
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, signer)
 
+      console.log('✅ Fulfilling intent:', intentId)
       const tx = await contract.fulfillIntent(intentId, fulfillmentProof)
       await tx.wait()
       
@@ -163,7 +214,7 @@ export default function Home() {
       setTimeout(loadIntents, 2000)
     } catch (error) {
       console.error('Error:', error)
-      alert('Failed to fulfill intent')
+      alert('Failed to fulfill intent - check console for details')
     } finally {
       setLoading(false)
       setFulfillmentProof('')
@@ -179,6 +230,7 @@ export default function Home() {
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(CONTRACT_ADDRESS, INTENT_REGISTRY_ABI, signer)
 
+      console.log('⚖️ Validating proof:', intentId, isValid)
       const tx = await contract.validateProof(intentId, isValid)
       await tx.wait()
       
@@ -186,7 +238,7 @@ export default function Home() {
       setTimeout(loadIntents, 2000)
     } catch (error) {
       console.error('Error:', error)
-      alert('Failed to submit validation')
+      alert('Failed to submit validation - check console for details')
     } finally {
       setLoading(false)
     }
@@ -224,6 +276,27 @@ export default function Home() {
             </div>
           </div>
           <WalletConnect onAccountChange={handleAccountChange} />
+        </div>
+
+        {/* Connection Status */}
+        <div className="bg-gradient-to-r from-[#1a1f4b]/60 to-[#4a1e6b]/60 p-4 rounded-xl border border-[#00b4d8]/20 mb-6">
+          <div className="flex justify-between items-center">
+            <div className="text-sm font-mono">{connectionStatus}</div>
+            <div className="flex gap-2">
+              <button 
+                onClick={testConnection}
+                className="bg-[#00b4d8] text-white px-3 py-1 rounded text-sm"
+              >
+                🧪 Test Connection
+              </button>
+              <button 
+                onClick={() => console.log('Current intents:', intents)}
+                className="bg-[#48cae4] text-white px-3 py-1 rounded text-sm"
+              >
+                🐛 Debug Intents
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* User Stats */}
@@ -365,12 +438,14 @@ I intend to create content that educates thousands..."
           <div className="bg-gradient-to-br from-[#1a1f4b]/60 to-[#4a1e6b]/60 rounded-2xl p-8 border border-[#48cae4]/20">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-3xl font-bold text-[#48cae4]">Live Intent Economy</h2>
-              <button 
-                onClick={loadIntents}
-                className="bg-[#00b4d8] text-white px-4 py-2 rounded-lg"
-              >
-                Refresh
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={loadIntents}
+                  className="bg-[#00b4d8] text-white px-4 py-2 rounded-lg"
+                >
+                  🔄 Refresh Intents
+                </button>
+              </div>
             </div>
 
             <div className="space-y-4">
@@ -489,8 +564,14 @@ I intend to create content that educates thousands..."
               ) : (
                 <div className="text-center py-12 text-[#48cae4]">
                   <div className="text-6xl mb-4">🌌</div>
-                  <div className="text-xl font-semibold">No Intents Yet</div>
+                  <div className="text-xl font-semibold">No Intents Found</div>
                   <div className="text-[#e2f3f8] mt-2">Be the first to express economic value</div>
+                  <button 
+                    onClick={testConnection}
+                    className="mt-4 bg-[#00b4d8] text-white px-4 py-2 rounded-lg"
+                  >
+                    🧪 Test Blockchain Connection
+                  </button>
                 </div>
               )}
             </div>
